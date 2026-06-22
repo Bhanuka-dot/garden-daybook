@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Garden Daybook</title>
+    <!-- Core library links for iPhone browser execution -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@0.475.0/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // Pulling standard Lucide icons directly from the browser window object
+        const {
+          CalendarDays, ClipboardList, StickyNote, Sprout, Users,
+          Plus, Check, Trash2, ChevronLeft, ChevronRight, Copy,
+          RotateCcw, Pencil, Leaf, Sun, Flag
+        } = window.lucide;
+
+        /* ---------- palette (resort garden: pine + paper + morning amber) ---------- */
+        const C = {
+          ink: "#16271E",
+          moss: "#2E6B4A",
+          leaf: "#6FA368",
+          paper: "#F4F2EA",
+          card: "#FFFFFF",
+          cardSoft: "#FBFAF4",
+          stone: "#7E8576",
+          line: "#E4E1D4",
+          sun: "#CF8A24",
+          sunSoft: "#FBF0DA",
+          mossSoft: "#E7F0E8",
+          danger: "#B14B3C",
+        };
+
+        /* ---------- date helpers ---------- */
+        const toISO = (d) => {
+          const z = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+          return z.toISOString().slice(0, 10);
+        };
+        const todayISO = () => toISO(new Date());
+        const shiftISO = (iso, delta) => {
+          const d = new Date(iso + "T00:00:00");
+          d.setDate(d.getDate() + delta);
+          return toISO(d);
+        };
+        const fmtLong = (iso) => {
+          const d = new Date(iso + "T00:00:00");
+          return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+        };
+        const uid = () => Math.random().toString(36).slice(2, 10);
+
+        /* ---------- storage (local fallback cache) ---------- */
+        const hasStore = typeof window !== "undefined" && window.localStorage;
+        function loadKey(key, fallback) {
+          if (!hasStore) return fallback;
+          try {
+            const r = window.localStorage.getItem(key);
+            return r ? JSON.parse(r) : fallback;
+          } catch { return fallback; }
+        }
+        function saveKey(key, value) {
+          if (!hasStore) return;
+          try { window.localStorage.setItem(key, JSON.stringify(value)); }
+          catch (e) { console.error("save failed", key, e); }
+        }
+        function useDebouncedPersist(key, value, hydrated, delay = 500) {
+          React.useEffect(() => {
+            if (!hydrated) return;
+            const t = setTimeout(() => saveKey(key, value), delay);
+            return () => clearTimeout(t);
+          }, [value, hydrated]);
+        }
+
+        /* ---------- UI atoms ---------- */
+        function SectionLabel({ icon, children, right }) {
+          return (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, marginTop: 14 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ color: C.leaf, display: "flex", alignItems: "center" }}>{icon}</span>
+                <span style={{ color: C.stone, fontFamily: "Inter, sans-serif", fontSize: 11, letterSpacing: "0.14em", fontWeight: 600, textTransform: "uppercase" }}>
+                  {children}
+                </span>
+              </div>
+              {right}
+            </div>
+          );
+        }
+
+        function Empty({ icon, title, hint }) {
+          return (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", padding: "40px 24px" }}>
+              <div style={{ color: C.leaf, opacity: 0.7, marginBottom: 12 }}>{icon}</div>
+              <div style={{ color: C.ink, fontFamily: "Fraunces, serif", fontSize: 17, fontWeight: 600 }}>{title}</div>
+              <div style={{ color: C.stone, fontSize: 13, marginTop: 4, maxWidth: 240, lineHeight: 1.4 }}>{hint}</div>
+            </div>
+          );
+        }
+
+        /* ---------- Main Application Window ---------- */
+        function App() {
+          const [hydrated, setHydrated] = React.useState(false);
+          const [tab, setTab] = React.useState("plan");
+          const [date, setDate] = React.useState(todayISO());
+
+          const [gardeners, setGardeners] = React.useState([]);
+          const [plans, setPlans] = React.useState({});
+          const [followups, setFollowups] = React.useState([]);
+          const [notes, setNotes] = React.useState({});
+          const [ideas, setIdeas] = React.useState([]);
+
+          const [toast, setToast] = React.useState("");
+          const toastTimer = React.useRef(null);
+          const ping = (m) => {
+            setToast(m);
+            clearTimeout(toastTimer.current);
+            toastTimer.current = setTimeout(() => setToast(""), 1900);
+          };
+
+          React.useEffect(() => {
+            const g = loadKey("gardeners", []);
+            const p = loadKey("plans", {});
+            const f = loadKey("followups", []);
+            const n = loadKey("notes", {});
+            const i = loadKey("ideas", []);
+            setGardeners(g); setPlans(p); setFollowups(f); setNotes(n); setIdeas(i);
+            setHydrated(true);
+          }, []);
+
+          useDebouncedPersist("gardeners", gardeners, hydrated);
+          useDebouncedPersist("plans", plans, hydrated);
+          useDebouncedPersist("followups", followups, hydrated);
+          useDebouncedPersist("notes", notes, hydrated);
+          useDebouncedPersist("ideas", ideas, hydrated);
+
+          const dayTasks = plans[date] || [];
+          const setDayTasks = (next) => setPlans((prev) => ({ ...prev, [date]: next }));
+          const addTask = (gardenerId, gardenerName, time, desc) =>
+            setDayTasks([...dayTasks, { id: uid(), gardenerId, gardenerName, time: time.trim(), desc: desc.trim(), done: false, doneAt: null }]);
+          const toggleTask = (id) =>
+            setDayTasks(dayTasks.map((t) => t.id === id ? { ...t, done: !t.done, doneAt: !t.done ? Date.now() : null } : t));
+          const removeTask = (id) => setDayTasks(dayTasks.filter((t) => t.id !== id));
+
+          const addFollowup = (hod, desc) =>
+            setFollowups([{ id: uid(), hod: hod.trim(), desc: desc.trim(), status: "pending", createdAt: Date.now(), doneAt: null }, ...followups]);
+          const toggleFollowup = (id) =>
+            setFollowups(followups.map((f) => f.id === id ? { ...f, status: f.status === "done" ? "pending" : "done", doneAt: f.status === "done" ? null : Date.now() } : f));
+          const removeFollowup = (id) => setFollowups(followups.filter((f) => f.id !== id));
+
+          const addIdea = (text) => setIdeas([{ id: uid(), text: text.trim(), done: false, createdAt: Date.now() }, ...ideas]);
+          const toggleIdea = (id) => setIdeas(ideas.map((x) => x.id === id ? { ...x, done: !x.done } : x));
+          const removeIdea = (id) => setIdeas(ideas.filter((x) => x.id !== id));
+
+          const addGardener = (name) => setGardeners([...gardeners, { id: uid(), name: name.trim() }]);
+          const renameGardener = (id, name) => setGardeners(gardeners.map((g) => g.id === id ? { ...g, name: name.trim() } : g));
+          const removeGardener = (id) => setGardeners(gardeners.filter((g) => g.id !== id));
+
+          const buildBriefing = () => {
+            const lines = [`Morning Briefing — ${fmtLong(date)}`, ""];
+            lines.push("— GARDENER TASKS —");
+            if (dayTasks.length === 0) lines.push("  (no tasks set)");
+            else {
+              const order = [...dayTasks].sort((a, b) => (a.time || "~").localeCompare(b.time || "~"));
+              const names = [...new Set(order.map((t) => t.gardenerName))];
+              names.forEach((nm) => {
+                lines.push(`${nm}:`);
+                order.filter((t) => t.gardenerName === nm).forEach((t) =>
+                  lines.push(`   • ${t.time ? t.time + "  " : ""}${t.desc}${t.done ? "  ✓" : ""}`));
+              });
+            }
+            const pend = followups.filter((f) => f.status === "pending");
+            lines.push("", "— PENDING FOLLOW-UPS —");
+            if (pend.length === 0) lines.push("  (none)");
+            else pend.forEach((f) => lines.push(`   • ${f.desc} — ${f.hod}`));
+            if (notes[date]?.trim()) lines.push("", "— NOTES —", notes[date].trim());
+            return lines.join("\n");
+          };
+          
+          const copyBriefing = async () => {
+            const text = buildBriefing();
+            try {
+              await navigator.clipboard.writeText(text);
+              ping("Briefing copied");
+            } catch {
+              window.prompt("Copy briefing manual backup:", text);
+            }
+          };
+
+          if (!hydrated) {
+            return (
+              <div style={{ background: C.paper, height: "100dvh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Leaf size={28} color={C.leaf} />
+              </div>
+            );
+          }
+
+          const NAV = [
+            { id: "plan", label: "Plan", icon: CalendarDays },
+            { id: "follow", label: "Follow-ups", icon: ClipboardList },
+            { id: "notes", label: "Notes", icon: StickyNote },
+            { id: "ideas", label: "Ideas", icon: Sprout },
+            { id: "team", label: "Team", icon: Users },
+          ];
+
+          return (
+            <div style={{ background: C.paper, height: "100dvh", display: "flex", flexDirection: "column", fontFamily: "Inter, sans-serif", color: C.ink, maxWidth: 480, margin: "0 auto", boxShadow: "0 0 40px rgba(0,0,0,0.06)", position: "relative" }}>
+              <FontInjector />
+
+              <header style={{ padding: "16px 18px 12px", borderBottom: `1px solid ${C.line}`, background: C.paper, flexShrink: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 32, height: 32, borderRadius: 9, background: C.mossSoft, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <Leaf size={17} color={C.moss} />
+                  </div>
+                  <div style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600, letterSpacing: "-0.01em" }}>
+                    Garden Daybook
+                  </div>
+                </div>
+              </header>
+
+              <main style={{ flex: 1, overflowY: "auto", padding: "14px 16px 22px", boxSizing: "border-box" }}>
+                {tab === "plan" && (
+                  <PlanTab
+                    date={date} setDate={setDate} gardeners={gardeners} tasks={dayTasks}
+                    addTask={addTask} toggleTask={toggleTask} removeTask={removeTask}
+                    copyBriefing={copyBriefing} goTeam={() => setTab("team")}
+                  />
+                )}
+                {tab === "follow" && (
+                  <FollowTab list={followups} add={addFollowup} toggle={toggleFollowup} remove={removeFollowup} />
+                )}
+                {tab === "notes" && (
+                  <NotesTab date={date} setDate={setDate} notes={notes} setNotes={setNotes} />
+                )}
+                {tab === "ideas" && (
+                  <IdeasTab list={ideas} add={addIdea} toggle={toggleIdea} remove={removeIdea} />
+                )}
+                {tab === "team" && (
+                  <TeamTab list={gardeners} add={addGardener} rename={renameGardener} remove={removeGardener} />
+                )}
+              </main>
+
+              {toast && (
+                <div style={{ position: "absolute", bottom: 84, left: "50%", transform: "translateX(-50%)", background: C.ink, color: "#fff", padding: "9px 16px", borderRadius: 999, fontSize: 13, zIndex: 50, boxShadow: "0 6px 20px rgba(0,0,0,0.25)", whiteSpace: "nowrap" }}>
+                  {toast}
+                </div>
+              )}
+
+              <nav style={{ display: "flex", borderTop: `1px solid ${C.line}`, background: C.card, flexShrink: 0, paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+                {NAV.map((n) => {
+                  const Icon = n.icon;
+                  const active = tab === n.id;
+                  return (
+                    <button key={n.id} onClick={() => setTab(n.id)}
+                      style={{ flex: 1, padding: "12px 0 14px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: "transparent", border: "none", cursor: "pointer", color: active ? C.moss : C.stone }}>
+                      <Icon size={21} strokeWidth={active ? 2.4 : 1.9} />
+                      <span style={{ fontSize: 10.5, fontWeight: active ? 600 : 500 }}>{n.label}</span>
+                    </button>
+                  );
+                })}
+              </nav>
+            </div>
+          );
+        }
+
+        /* ---------- Tab Panels ---------- */
+        function DateStrip({ date, setDate }) {
+          const isToday = date === todayISO();
+          return (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "8px 10px", marginBottom: 14 }}>
+              <button onClick={() => setDate(shiftISO(date, -1))} style={navBtn}><ChevronLeft size={20} color={C.ink} /></button>
+              <div style={{ textAlign: "center", flex: 1 }}>
+                <div style={{ fontFamily: "Fraunces, serif", fontSize: 17, fontWeight: 600 }}>{fmtLong(date)}</div>
+                {!isToday ? (
+                  <button onClick={() => setDate(todayISO())} style={{ fontSize: 11, color: C.moss, background: "none", border: "none", cursor: "pointer", padding: 0, marginTop: 1, fontWeight: 600 }}>
+                    Jump to today
+                  </button>
+                ) : (
+                  <div style={{ fontSize: 11, color: C.sun, fontWeight: 600 }}>Today</div>
+                )}
+              </div>
+              <button onClick={() => setDate(shiftISO(date, 1))} style={navBtn}><ChevronRight size={20} color={C.ink} /></button>
+            </div>
+          );
+        }
+        const navBtn = { width: 38, height: 38, borderRadius: 10, border: "none", background: C.paper, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" };
+
+        function PlanTab({ date, setDate, gardeners, tasks, addTask, toggleTask, removeTask, copyBriefing, goTeam }) {
+          const [gid, setGid] = React.useState("");
+          const [time, setTime] = React.useState("");
+          const [desc, setDesc] = React.useState("");
+
+          React.useEffect(() => { if (!gid && gardeners[0]) setGid(gardeners[0].id); }, [gardeners, gid]);
+
+          const submit = () => {
+            if (!desc.trim() || !gid) return;
+            const g = gardeners.find((x) => x.id === gid);
+            addTask(gid, g ? g.name : "—", time, desc);
+            setTime(""); setDesc("");
+          };
+
+          const groups = [...new Set(tasks.map((t) => t.gardenerName))].map((name) => ({
+            name,
+            items: tasks.filter((t) => t.gardenerName === name)
+              .sort((a, b) => (a.done - b.done) || (a.time || "~").localeCompare(b.time || "~")),
+          }));
+
+          return (
+            <div>
+              <DateStrip date={date} setDate={setDate} />
+              <button onClick={copyBriefing}
+                style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, background: C.sunSoft, color: C.sun, border: `1px solid ${C.sun}33`, borderRadius: 12, padding: "11px", fontWeight: 700, fontSize: 14, cursor: "pointer", marginBottom: 18 }}>
+                <Copy size={17} /> Copy morning briefing
+              </button>
+
+              <SectionLabel icon={<Sun size={14} />}>Assign work</SectionLabel>
+              {gardeners.length === 0 ? (
+                <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: 16, marginBottom: 18 }}>
+                  <div style={{ fontSize: 13, color: C.stone, marginBottom: 12, lineHeight: 1.4 }}>Add crew profiles first to unlock active assignments.</div>
+                  <button onClick={goTeam} style={primaryBtn}>Go to Team Tab</button>
+                </div>
+              ) : (
+                <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: 12, marginBottom: 20 }}>
+                  <select value={gid} onChange={(e) => setGid(e.target.value)} style={{ ...field, marginBottom: 8 }}>
+                    <option value="" disabled>Select Gardener...</option>
+                    {gardeners.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                  </select>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input value={time} onChange={(e) => setTime(e.target.value)} placeholder="10:30" style={{ ...field, width: 80, flexShrink: 0 }} />
+                    <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Trimming" onKeyDown={(e) => e.key === "Enter" && submit()} style={{ ...field, flex: 1 }} />
+                  </div>
+                  <button onClick={submit} disabled={!desc.trim() || !gid} style={{ ...primaryBtn, width: "100%", marginTop: 8, opacity: (desc.trim() && gid) ? 1 : 0.45 }}>
+                    <Plus size={17} /> Add task
+                  </button>
+                </div>
+              )}
+
+              <SectionLabel icon={<CalendarDays size={14} />}>Today's work list</SectionLabel>
+              {groups.length === 0 ? (
+                <Empty icon={<Sprout size={32} />} title="No tasks assigned" hint="Work assignments populate down here dynamically grouped by person." />
+              ) : (
+                groups.map((grp) => (
+                  <div key={grp.name} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "12px 12px 6px", marginBottom: 12, position: "relative", overflow: "hidden" }}>
+                    <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: C.leaf }} />
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, paddingLeft: 4 }}>
+                      <span style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600 }}>{grp.name}</span>
+                      <span style={{ marginLeft: "auto", fontSize: 11, color: C.stone, fontWeight: 500 }}>
+                        {grp.items.filter((t) => t.done).length}/{grp.items.length} done
+                      </span>
+                    </div>
+                    {grp.items.map((t) => (
+                      <div key={t.id} style={{ display: "flex", alignItems: "start", gap: 10, padding: "8px 4px", borderTop: `1px solid ${C.line}` }}>
+                        <button onClick={() => toggleTask(t.id)} style={checkBox(t.done)}>
+                          {t.done && <Check size={14} color="#fff" strokeWidth={3} />}
+                        </button>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "baseline" }}>
+                            {t.time && <span style={{ fontSize: 12, fontWeight: 700, color: t.done ? C.stone : C.moss }}>{t.time}</span>}
+                            <span style={{ fontSize: 14, color: t.done ? C.stone : C.ink, textDecoration: t.done ? "line-through" : "none", lineHeight: 1.4 }}>{t.desc}</span>
+                          </div>
+                        </div>
+                        <button onClick={() => removeTask(t.id)} style={ghostBtn}><Trash2 size={15} color={C.stone} /></button>
+                      </div>
+                    ))}
+                  </div>
+                ))
+              )}
+            </div>
+          );
+        }
+
+        function FollowTab({ list, add, toggle, remove }) {
+          const [hod, setHod] = React.useState("");
+          const [desc, setDesc] = React.useState("");
+          const [filter, setFilter] = React.useState("pending");
+
+          const submit = () => { if (!desc.trim()) return; add(hod || "—", desc); setHod(""); setDesc(""); };
+          const shown = list.filter((f) => filter === "all" ? true : f.status === filter);
+          const counts = {
+            pending: list.filter((f) => f.status === "pending").length,
+            done: list.filter((f) => f.status === "done").length,
+          };
+
+          return (
+            <div>
+              <SectionLabel icon={<Flag size={14} />}>New follow-up</SectionLabel>
+              <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: 12, marginBottom: 18 }}>
+                <input value={hod} onChange={(e) => setHod(e.target.value)} placeholder="From (e.g. Resort Manager)" style={{ ...field, marginBottom: 8 }} />
+                <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Clean layout area" onKeyDown={(e) => e.key === "Enter" && submit()} style={field} />
+                <button onClick={submit} disabled={!desc.trim()} style={{ ...primaryBtn, width: "100%", marginTop: 8, opacity: desc.trim() ? 1 : 0.45 }}>
+                  <Plus size={17} /> Add follow-up
+                </button>
+              </div>
+
+              <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                {[["pending", `Pending (${counts.pending})`], ["done", `Done (${counts.done})`], ["all", "All"]].map(([id, lbl]) => (
+                  <button key={id} onClick={() => setFilter(id)} style={chip(filter === id)}>{lbl}</button>
+                ))}
+              </div>
+
+              {shown.length === 0 ? (
+                <Empty icon={<ClipboardList size={32} />} title="No data logged" hint="Tracks custom feedback logs received directly from department heads." />
+              ) : (
+                shown.map((f) => (
+                  <div key={f.id} style={{ background: f.status === "done" ? C.cardSoft : C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: 12, marginBottom: 10 }}>
+                    <div style={{ display: "flex", alignItems: "start", gap: 10 }}>
+                      <button onClick={() => toggle(f.id)} style={checkBox(f.status === "done")}>
+                        {f.status === "done" && <Check size={14} color="#fff" strokeWidth={3} />}
+                      </button>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, color: f.status === "done" ? C.stone : C.ink, textDecoration: f.status === "done" ? "line-through" : "none", lineHeight: 1.4 }}>{f.desc}</div>
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 8, background: C.mossSoft, color: C.moss, borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 600 }}>
+                          <Flag size={11} /> {f.hod}
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
+                      <button onClick={() => toggle(f.id)} style={smallBtn}>
+                        {f.status === "done" ? <><RotateCcw size={13} /> Reopen</> : <><Check size={13} /> Done</>}
+                      </button>
+                      <button onClick={() => remove(f.id)} style={{ ...smallBtn, color: C.danger, borderColor: `${C.danger}33` }}>
+                        <Trash2 size={13} /> Delete
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          );
+        }
+
+        function NotesTab({ date, setDate, notes, setNotes }) {
+          const text = notes[date] || "";
+          const datesWithNotes = Object.keys(notes).filter((k) => notes[k]?.trim() && k !== date).sort().reverse();
+          return (
+            <div>
+              <DateStrip date={date} setDate={setDate} />
+              <SectionLabel icon={<StickyNote size={14} />}>Briefing notes for this day</SectionLabel>
+              <textarea
+                value={text}
+                onChange={(e) => setNotes({ ...notes, [date]: e.target.value })}
+                placeholder={"Morning meeting bullet points…\n\n• Arrival updates\n• Fertilizer application schedules\n• Irrigation line checkpoints"}
+                style={{ width: "100%", minHeight: 200, background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: 14, fontSize: 14.5, lineHeight: 1.55, color: C.ink, fontFamily: "Inter, sans-serif", resize: "none", outline: "none", boxSizing: "border-box" }}
+              />
+              {datesWithNotes.length > 0 && (
+                <>
+                  <div style={{ height: 12 }} />
+                  <SectionLabel icon={<CalendarDays size={14} />} >Earlier saved history</SectionLabel>
+                  {datesWithNotes.map((k) => (
+                    <button key={k} onClick={() => setDate(k)}
+                      style={{ width: "100%", textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 12px", marginBottom: 8, cursor: "pointer" }}>
+                      <div style={{ fontFamily: "Fraunces, serif", fontWeight: 600, fontSize: 14 }}>{fmtLong(k)}</div>
+                      <div style={{ fontSize: 12.5, color: C.stone, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{notes[k].trim()}</div>
+                    </button>
+                  ))}
+                </>
+              )}
+            </div>
+          );
+        }
+
+        // Ideas module
+        function IdeasTab({ list, add, toggle, remove }) {
+          const [text, setText] = React.useState("");
+          const submit = () => { if (!text.trim()) return; add(text); setText(""); };
+          const open = list.filter((x) => !x.done);
+          const done = list.filter((x) => x.done);
+
+          const IdeaCard = (x) => (
+            <div key={x.id} style={{ background: x.done ? C.cardSoft : C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: 12, marginBottom: 8 }}>
+              <div style={{ display: "flex", alignItems: "start", gap: 10 }}>
+                <button onClick={() => toggle(x.id)} style={checkBox(x.done)}>
+                  {x.done && <Check size={14} color="#fff" strokeWidth={3} />}
+                </button>
+                <div style={{ flex: 1, fontSize: 14, color: x.done ? C.stone : C.ink, textDecoration: x.done ? "line-through" : "none", whiteSpace: "pre-wrap", lineHeight: 1.4 }}>{x.text}</div>
+                <button onClick={() => remove(x.id)} style={ghostBtn}><Trash2 size={15} color={C.stone} /></button>
+              </div>
+            </div>
+          );
+
+          return (
+            <div>
+              <SectionLabel icon={<Sprout size={14} />}>New landscaping idea</SectionLabel>
+              <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: 12, marginBottom: 18 }}>
+                <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Incorporate new variant pathways..."
+                  style={{ width: "100%", minHeight: 72, background: C.paper, border: `1px solid ${C.line}`, borderRadius: 10, padding: 10, fontSize: 14, color: C.ink, fontFamily: "Inter, sans-serif", resize: "none", outline: "none", boxSizing: "border-box" }} />
+                <button onClick={submit} disabled={!text.trim()} style={{ ...primaryBtn, width: "100%", marginTop: 8, opacity: text.trim() ? 1 : 0.45 }}>
+                  <Plus size={17} /> Save idea
+                </button>
+              </div>
+              {list.length === 0 ? (
+                <Empty icon={<Sprout size={32} />} title="No concepts logged" hint="Record structural garden upgrades or layout adjustments here." />
+              ) : (
+                <>
+                  <SectionLabel icon={<Sprout size={14} />}>Active Ideas ({open.length})</SectionLabel>
+                  {open.length === 0 ? <div style={{ fontSize: 13, color: C.stone, paddingLeft: 4 }}>All logs implemented.</div> : open.map(IdeaCard)}
+                  {done.length > 0 && (
+                    <>
+                      <div style={{ height: 8 }} />
+                      <SectionLabel icon={<Check size={14} />}>Implemented Designs ({done.length})</SectionLabel>
+                      {done.map(IdeaCard)}
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        }
+
+        // Team management panel
+        function TeamTab({ list, add, rename, remove }) {
+          const [name, setName] = React.useState("");
+          const [editId, setEditId] = React.useState(null);
+          const [editVal, setEditVal] = React.useState("");
+          const submit = () => { if (!name.trim()) return; add(name); setName(""); };
+
+          return (
+            <div>
+              <SectionLabel icon={<Users size={14} />}>Add gardener</SectionLabel>
+              <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: 12, marginBottom: 18 }}>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Azad" onKeyDown={(e) => e.key === "Enter" && submit()} style={{ ...field, flex: 1 }} />
+                  <button onClick={submit} disabled={!name.trim()} style={{ ...primaryBtn, opacity: name.trim() ? 1 : 0.45, padding: "0 16px" }}>
+                    <Plus size={17} />
+                  </button>
+                </div>
+              </div>
+              <SectionLabel icon={<Leaf size={14} />}>Crew Roster ({list.length})</SectionLabel>
+              {list.length === 0 ? (
+                <Empty icon={<Users size={32} />} title="No profiles created" hint="Populate your core operational field crew list here to begin assigning day tasks." />
+              ) : (
+                list.map((g) => (
+                  <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 10, background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "8px 12px", marginBottom: 8 }}>
+                    <div style={{ width: 32, height: 32, borderRadius: 999, background: C.mossSoft, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      <Leaf size={15} color={C.moss} />
+                    </div>
+                    {editId === g.id ? (
+                      <input value={editVal} onChange={(e) => setEditVal(e.target.value)} autoFocus
+                        onKeyDown={(e) => { if (e.key === "Enter") { rename(g.id, editVal); setEditId(null); } }}
+                        style={{ ...field, flex: 1, padding: "6px 10px" }} />
+                    ) : (
+                      <span style={{ flex: 1, fontSize: 14.5, fontWeight: 500 }}>{g.name}</span>
+                    )}
+                    {editId === g.id ? (
+                      <button onClick={() => { rename(g.id, editVal); setEditId(null); }} style={ghostBtn}><Check size={17} color={C.moss} /></button>
+                    ) : (
+                      <button onClick={() => { setEditId(g.id); setEditVal(g.name); }} style={ghostBtn}><Pencil size={15} color={C.stone} /></button>
+                    )}
+                    <button onClick={() => remove(g.id)} style={ghostBtn}><Trash2 size={15} color={C.stone} /></button>
+                  </div>
+                ))
+              )}
+            </div>
+          );
+        }
+
+        /* ---------- Global styles and font management system ---------- */
+        const field = { width: "100%", background: C.paper, border: `1px solid ${C.line}`, borderRadius: 10, padding: "10px 12px", fontSize: 14, color: C.ink, fontFamily: "Inter, sans-serif", outline: "none", boxSizing: "border-box" };
+        const primaryBtn = { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, background: C.moss, color: "#fff", border: "none", borderRadius: 10, padding: "10px 14px", fontSize: 14, fontWeight: 600, cursor: "pointer" };
+        const smallBtn = { display: "inline-flex", alignItems: "center", gap: 5, background: C.card, color: C.moss, border: `1px solid ${C.line}`, borderRadius: 8, padding: "6px 11px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" };
+        const ghostBtn = { background: "transparent", border: "none", cursor: "pointer", padding: 5, display: "flex", alignItems: "center", borderRadius: 8, flexShrink: 0 };
+        const checkBox = (on) => ({ width: 22, height: 22, borderRadius: 6, flexShrink: 0, border: on ? "none" : `2px solid ${C.line}`, background: on ? C.moss : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 });
+        const chip = (on) => ({ flex: 1, padding: "8px 0", borderRadius: 999, border: `1px solid ${on ? C.moss : C.line}`, background: on ? C.moss : C.card, color: on ? "#fff" : C.stone, fontSize: 12, fontWeight: 600, cursor: "pointer", textAlign: "center" });
+
+        function FontInjector() {
+          React.useEffect(() => {
+            const id = "gdb-fonts";
+            if (document.getElementById(id)) return;
+            const l = document.createElement("link");
+            l.id = id; l.rel = "stylesheet";
+            l.href = "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap";
+            document.head.appendChild(l);
+          }, []);
+          return null;
+        }
+
+        // Initialize and bind core component root to standard viewport markup
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
