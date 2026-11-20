@@ -1,5 +1,6 @@
 // Work Hub Capture — Scriptable widget (iOS Home Screen + Lock Screen).
-// Tap a widget button -> native iOS text box -> Work Hub opens with the line in Capture -> tap Add.
+// Tap a widget button -> native iOS text box -> Add -> Work Hub sheet saves it and shows "Added to …".
+// First time only: sign in to claude.ai inside that sheet (it keeps its own login, separate from Safari).
 // Uses the same prefix codes as the app: T R D W B M P O X (no letter = Inbox).
 
 const APP = "https://claude.ai/artifact/TEx2YN3JYKrQpBCgnrQKSt";
@@ -69,8 +70,9 @@ async function capture(p) {
   const hist = loadHistory();
   hist.unshift({ line, at: Date.now() });
   saveHistory(hist);
-  Pasteboard.copy(line); // fallback: paste into Capture if the link does not prefill
-  Safari.open(APP + "#cap=" + encodeURIComponent(line));
+  // Open Work Hub as a sheet inside Scriptable (no jump to Safari or the Claude app).
+  // #add= files the line at once and shows "Added to …"; swipe the sheet down when done.
+  await Safari.openInApp(APP + "#add=" + encodeURIComponent(line), false);
 }
 
 /* ---------- widget building blocks ---------- */
